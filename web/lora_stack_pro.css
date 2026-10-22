@@ -915,6 +915,19 @@
   word-break: break-all;
 }
 
+/* SHA256 显示前 16 位，完整值在 title 里，点击复制 */
+.lsp-sha {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 9.5px;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+}
+
+.lsp-sha:hover {
+  color: var(--lsp-accent);
+  text-decoration: underline dotted;
+}
+
 .lsp-tags {
   display: flex;
   flex-wrap: wrap;

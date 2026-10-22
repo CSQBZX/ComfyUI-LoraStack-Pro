@@ -3496,7 +3496,21 @@ class LoraStackPanel {
       if (civitai.downloads) addKV("下载量", civitai.downloads);
     }
     const sha = (civitai && civitai.sha256) || (info && info.sha256);
-    if (sha) addKV("SHA256", sha.slice(0, 24) + "…");
+    if (sha) {
+      // 64 位全铺出来太占地方：显示前 16 位，完整值放悬停提示，点一下复制
+      kv.appendChild(el("dt", null, "SHA256"));
+      const shaEl = el("dd", "lsp-sha", `${sha.slice(0, 16)}…`);
+      shaEl.title = `${sha}\n点击复制完整值`;
+      shaEl.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(sha);
+          this.setStatus("ok", `已复制完整 SHA256（${sha.length} 位）`);
+        } catch (err) {
+          this.setStatus("warn", "复制失败，可从悬停提示里手动复制");
+        }
+      });
+      kv.appendChild(shaEl);
+    }
     body.appendChild(kv);
 
     // 触发词

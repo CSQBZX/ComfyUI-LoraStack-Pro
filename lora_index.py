@@ -21,7 +21,7 @@ from urllib.parse import quote
 import folder_paths
 
 try:  # 拼音搜索依赖，装不上就静默降级
-    from pypinyin import lazy_pinyin, Style as PinyinStyle
+    from pypinyin import lazy_pinyin
     _HAS_PINYIN = True
 except Exception:  # noqa: BLE001
     _HAS_PINYIN = False
@@ -71,19 +71,22 @@ def thumb_url(rel: str = "", dir_path: str = "", mtime: float = 0.0, width: int 
 
 
 def _pinyin_variants(text: str) -> str:
-    """生成全拼 + 首字母两种变体，让用户能打 `nvpuzhuang` 或 `npz` 搜到「女仆装」。"""
+    """生成全拼变体，让用户能打 `nvpuzhuang` 搜到「女仆装」。
+
+    不做首字母（`npz`）：两三个字母的缩写会和文件名里的字母组合大量撞车，
+    而且同一个缩写对应太多中文词，命中噪声远大于收益。
+    """
     if not _HAS_PINYIN or not text:
         return ""
     if not any("\u4e00" <= ch <= "\u9fff" for ch in text):
         return ""
     try:
         full = "".join(lazy_pinyin(text))
-        initials = "".join(lazy_pinyin(text, style=PinyinStyle.FIRST_LETTER))
     except Exception:  # noqa: BLE001 - 拼音转换失败不该影响搜索
         return ""
     if not full:
         return ""
-    return f" {full} {initials} "
+    return f" {full} "
 
 
 def search_blob(*parts: str) -> str:
@@ -219,7 +222,12 @@ class FolderNode:
 
     def __post_init__(self) -> None:
         if not self.search_target:
-            self.search_target = f"{human_lower(self.name)} {human_lower(self.rel)}"
+            # 拼音也要进：否则「只搜文件夹」时打 nvpuzhuang 找不到「女仆装」，
+            # 而「搜全部」却能找到，两边行为对不上
+            self.search_target = (
+                f"{human_lower(self.name)} {human_lower(self.rel)}"
+                f"{_pinyin_variants(self.name)}"
+            )
 
 
 def _pick_thumb(stem: str, images: list[tuple[str, str, float]]) -> tuple[str, str] | None:
@@ -294,6 +302,8 @@ class LoraIndex:
         self.children: dict[str, list[str]] = {}
         self._roots: list[str] = []
         self._blob_cache: dict[str, str] = {}
+        # 只含文件名（+拼音）的检索文本，给「只搜 LoRA 文件」用
+        self._name_blob_cache: dict[str, str] = {}
         # 搜索结果缓存：query -> (时间戳, 排序后的行, name_total, tag_total, folders, tokens, expanded)
         # 命中几千条时翻页只切片这层，不重跑全库匹配
         self._search_cache: dict[str, tuple] = {}
@@ -556,6 +566,7 @@ class LoraIndex:
             self.stale_covers = stale_covers
             self._roots = list(roots)
             self._blob_cache = {}
+            self._name_blob_cache = {}
             # 新增/删除文件后旧结果必须作废；换绑前先拿锁，避免请求线程
             # 正在遍历淘汰时被换掉判据
             with self._search_lock:
@@ -693,6 +704,7 @@ class LoraIndex:
             try:
                 for entry in list(self.entries):
                     self.blob_of(entry)
+                    self.name_blob(entry)   # 顺带预热「只搜文件」用的那份文本
             except Exception:  # noqa: BLE001 - 预热失败不该影响搜索可用性
                 LOGGER.exception("[LoraStackPro] 搜索文本预热失败")
 
@@ -716,6 +728,7 @@ class LoraIndex:
         with self._lock:
             self.aliases = dict(aliases)
             self._blob_cache = {}
+            self._search_cache = {}   # 别名参与检索文本，改了别名旧结果就不准了
         return dict(self.aliases)
 
     def refresh_covers(self) -> dict[str, str]:
@@ -936,13 +949,31 @@ class LoraIndex:
             return []
         return [other for other in others if other != entry.rel][:12]
 
-    def blob_of(self, entry: LoraEntry) -> str:
+    def name_blob(self, entry: LoraEntry) -> str:
+        """只含文件名及其拼音的检索文本，供「只搜 LoRA 文件」使用。"""
+        cached = self._name_blob_cache.get(entry.rel)
+        if cached is None:
+            cached = search_blob(entry.stem, entry.fname)
+            self._name_blob_cache[entry.rel] = cached
+        return cached
+
+    def blob_of_base(self, entry: LoraEntry) -> str:
+        """只含文件名 / 文件夹名及其拼音、别名的检索文本，不含训练标签。
+
+        必须把这两部分分开：拼音命中（`nvpuzhuang` 搜「女仆装」）只出现在 base 里，
+        用 base 判定它属于「名称命中」，否则会被误判成标签命中，在关掉标签搜索时
+        整批消失。
+        """
         base = self._blob_cache.get(entry.rel)
         if base is None:
             folder_name = entry.folder.rsplit("/", 1)[-1] if entry.folder else ""
             alias = self.aliases.get(entry.rel, "")
             base = search_blob(entry.fname, entry.stem, entry.folder, folder_name, alias)
             self._blob_cache[entry.rel] = base
+        return base
+
+    def blob_of(self, entry: LoraEntry) -> str:
+        base = self.blob_of_base(entry)
         # 只读取引用，不加锁：tag_blobs 由后台线程逐项写入，CPython 下 dict 单次读是安全的，
         # 而搜索要遍历全库，每项抢一次锁纯属浪费
         tags = self.tag_blobs.get(entry.rel, "")
@@ -951,27 +982,29 @@ class LoraIndex:
         return base
 
     def search(self, query: str, limit: int = 400, offset: int = 0,
-               include_tags: bool = True) -> dict:
-        """跨层搜索：命中 LoRA 文件名、任意上级文件夹名，或训练标签（含同义词扩展）。
+               include_tags: bool = True, scope: str = "all") -> dict:
+        """跨层搜索。`scope` 决定搜什么：all / lora（只当文件名）/ folder（只当文件夹名）。
 
         `limit` 是每页条数，`offset` 是起始位置。命中上千条时只回当前页：一次把
         600 条条目 JSON 全发出去实测约 590 KB，浏览器光解析就白白多花十几毫秒。
         `include_tags=False` 时只留名称/文件夹命中，省掉用户关掉标签开关后的无用传输。
         """
+        scope = scope if scope in ("all", "lora", "folder") else "all"
         raw_tokens = [human_lower(t) for t in re.split(r"[\s,，]+", (query or "").strip()) if t.strip()]
         if not raw_tokens:
             return {"query": query, "tokens": [], "expanded": {}, "loras": [], "folders": [],
                     "truncated": False, "total": 0, "name_total": 0, "tag_total": 0,
-                    "offset": 0, "limit": limit}
+                    "offset": 0, "limit": limit, "scope": scope}
 
-        cache_key = "\u0000".join(raw_tokens)
+        # scope 必须进缓存键：同一个词在不同范围下结果是两码事
+        cache_key = scope + "\u0000" + "\u0000".join(raw_tokens)
         cached = self._search_cache.get(cache_key)
         if cached is not None and time.time() - cached[0] < 120.0:
             (_, rows, name_total, tag_total, folder_total,
              folder_out, tokens_out, expanded) = cached
         else:
             (rows, name_total, tag_total, folder_total,
-             folder_out, tokens_out, expanded) = self._search_rows(raw_tokens)
+             folder_out, tokens_out, expanded) = self._search_rows(raw_tokens, scope)
             self._search_cache[cache_key] = (
                 time.time(), rows, name_total, tag_total, folder_total,
                 folder_out, tokens_out, expanded,
@@ -1015,27 +1048,85 @@ class LoraIndex:
             "tag_total": tag_total,
             "offset": start,
             "limit": limit,
+            "scope": scope,
         }
 
-    def _search_rows(self, raw_tokens: list[str]) -> tuple:
+    def _search_rows(self, raw_tokens: list[str], scope: str = "all") -> tuple:
         """算出完整命中与排序，返回可缓存的轻量行（不含每条的 payload dict）。
 
         每个 token 独立参与「与」匹配，不做同义词扩展：曾经做过中英同义词
         双向扩展，搜「金发」会连带命中 700+ 条沾 `blonde` 标签的条目，
         结果反而没法筛。中文现在只靠文件名、文件夹名和拼音命中。
+
+        `scope`：all = 名字 + 文件夹 + 标签；lora = 只当文件名；folder = 只当文件夹名。
         """
         def hits(text: str) -> bool:
             return any(token in text for token in raw_tokens)
 
+        def folder_payloads() -> list[dict]:
+            out = []
+            for rel_dir, node in self.folders.items():
+                if not rel_dir or node.total_count == 0:
+                    continue
+                target = node.search_target or f"{human_lower(node.name)} {human_lower(rel_dir)}"
+                if not all(token in target for token in raw_tokens):
+                    continue
+                out.append({
+                    "name": node.name,
+                    "path": node.rel,
+                    "lora_count": node.lora_count,
+                    "total_count": node.total_count,
+                    "sub_count": node.sub_count,
+                    "thumb": thumb_url(dir_path=node.rel, mtime=node.mtime, width=192) if node.thumb else "",
+                })
+            out.sort(key=lambda f: (-f["total_count"], f["name"]))
+            return out
+
+        # 只搜文件夹：不给 LoRA 列表，用户点进文件夹自己看，避免一次铺几百张卡
+        if scope == "folder":
+            found = folder_payloads()
+            return ([], 0, 0, len(found), found[:40], raw_tokens, {})
+
+        # 只搜 LoRA 文件名：不看文件夹名，也不碰训练标签
+        if scope == "lora":
+            first = raw_tokens[0]
+            picked = []
+            for entry in self.entries:
+                hay = self.name_blob(entry)
+                if not all(token in hay for token in raw_tokens):
+                    continue
+                stem_low = entry.stem_low
+                if stem_low == first:
+                    rank = 0
+                elif stem_low.startswith(first):
+                    rank = 1
+                elif first in stem_low:
+                    rank = 2
+                else:
+                    rank = 4     # 拼音命中
+                picked.append(((rank, 0, len(entry.rel), entry.rel_low),
+                               entry.rel, True, False, False))
+            picked.sort(key=lambda x: x[0])
+            rows = [(rel, mn, mf, tg) for _key, rel, mn, mf, tg in picked]
+            return (rows, len(rows), 0, 0, [], raw_tokens, {})
+
         scored: list[tuple] = []
         first = raw_tokens[0]
         for entry in self.entries:
-            blob = self.blob_of(entry)
-            if not all(token in blob for token in raw_tokens):
-                continue
+            # 名字侧（含拼音）与标签侧分开判定：拼音命中只出现在 base 里，
+            # 不能因为原始 stem/folder 不含该串就当成标签命中
+            base = self.blob_of_base(entry)
+            in_base = all(token in base for token in raw_tokens)
+            tags = self.tag_blobs.get(entry.rel, "")
+            if not in_base:
+                if not tags or not all(token in tags for token in raw_tokens):
+                    continue
+
             stem_low = entry.stem_low
             folder_low = entry.folder_low
-            if stem_low == first:
+            if not in_base:
+                rank = 5           # 纯训练标签命中，排在所有名称命中之后
+            elif stem_low == first:
                 rank = 0
             elif stem_low.startswith(first):
                 rank = 1
@@ -1044,12 +1135,12 @@ class LoraIndex:
             elif first in folder_low:
                 rank = 3
             else:
-                rank = 4
-            tag_group = rank >= 4
+                rank = 4           # 拼音或派生形式命中，仍属名称侧
+            tag_group = rank >= 5
             tag_pos = 0
             if tag_group:
                 # 标签按词频排序写入，越靠前越相关；用它给纯标签命中排序
-                positions = [blob.find(token) for token in raw_tokens if token in blob]
+                positions = [tags.find(token) for token in raw_tokens if token in tags]
                 tag_pos = min(positions) if positions else 10 ** 6
             scored.append((
                 (rank, tag_pos, len(entry.rel), entry.rel_low),
@@ -1061,26 +1152,11 @@ class LoraIndex:
 
         scored.sort(key=lambda x: x[0])
         rows = [(rel, mn, mf, tg) for _key, rel, mn, mf, tg in scored]
-        # 排序保证 rank<4（名称/文件夹命中）全在前，tag_group 就是分页用的分界
+        # 排序保证 rank<5（名称/文件夹/拼音命中）全在前，tag_group 就是分页用的分界
         name_total = sum(1 for row in rows if not row[3])
 
         # 命中的文件夹（用户可能想直接点进去）
-        folder_hits = []
-        for rel_dir, node in self.folders.items():
-            if not rel_dir or node.total_count == 0:
-                continue
-            target = node.search_target or f"{human_lower(node.name)} {human_lower(rel_dir)}"
-            if not all(token in target for token in raw_tokens):
-                continue
-            folder_hits.append({
-                "name": node.name,
-                "path": node.rel,
-                "lora_count": node.lora_count,
-                "total_count": node.total_count,
-                "sub_count": node.sub_count,
-                "thumb": thumb_url(dir_path=node.rel, mtime=node.mtime, width=192) if node.thumb else "",
-            })
-        folder_hits.sort(key=lambda f: (-f["total_count"], f["name"]))
+        folder_hits = folder_payloads()
 
         # 文件夹命中按体积设上限：120 个实测就要 31~46 KB，比 20 条 LoRA 本身还大
         return (rows, name_total, len(rows) - name_total, len(folder_hits),

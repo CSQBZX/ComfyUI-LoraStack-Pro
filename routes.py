@@ -93,7 +93,8 @@ async def search(request: web.Request) -> web.Response:
     except ValueError:
         offset = 0
     include_tags = request.query.get("tags", "1").lower() not in ("0", "false", "no")
-    data = await asyncio.to_thread(INDEX.search, query, limit, offset, include_tags)
+    scope = request.query.get("scope", "all").lower()
+    data = await asyncio.to_thread(INDEX.search, query, limit, offset, include_tags, scope)
     return web.json_response(data, dumps=_dumps_utf8)
 
 

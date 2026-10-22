@@ -58,7 +58,8 @@
 .lsp-search input {
   width: 100%;
   height: 28px;
-  padding: 0 54px 0 28px;
+  /* 右侧留给「范围 / 标签 / 清空」三个按钮 */
+  padding: 0 84px 0 28px;
   border: 1px solid var(--lsp-line);
   border-radius: var(--lsp-radius);
   background: var(--lsp-bg-soft);
@@ -96,6 +97,7 @@
 }
 
 .lsp-search-clear,
+.lsp-search-scope,
 .lsp-search-tag {
   display: inline-flex;
   align-items: center;
@@ -113,11 +115,13 @@
 }
 
 .lsp-search-clear:hover,
+.lsp-search-scope:hover,
 .lsp-search-tag:hover {
   background: var(--lsp-bg-hover);
   color: var(--lsp-text);
 }
 
+.lsp-search-scope.on,
 .lsp-search-tag.on {
   background: var(--lsp-accent-soft);
   color: var(--lsp-accent);

@@ -295,7 +295,8 @@ class LoraStackPanel {
     this.items = [];
     this.currentPath = "";
     this.query = "";
-    this.includeTags = true;
+    this.includeTags = false;   // 默认只搜名字：标签命中会让结果膨胀到几百条
+    this.searchScope = "all";   // all / folder / lora，搜索范围
     this.view = { kind: "dir", data: null };
     this.busy = false;
     this.detail = null;
@@ -552,7 +553,13 @@ class LoraStackPanel {
     });
 
     const actions = el("div", "lsp-search-actions");
-    this.tagToggle = el("button", "lsp-search-tag on", "标签");
+    this.scopeBtn = el("button", "lsp-search-scope", "全");
+    this.scopeBtn.title = "搜索范围：全部 → 只看文件夹 → 只看 LoRA 文件";
+    this.scopeBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      this.cycleSearchScope();
+    });
+    this.tagToggle = el("button", `lsp-search-tag${this.includeTags ? " on" : ""}`, "标签");
     this.tagToggle.title = "搜索时是否匹配训练标签（ss_tag_frequency）";
     this.tagToggle.addEventListener("click", (e) => {
       e.preventDefault();
@@ -569,7 +576,7 @@ class LoraStackPanel {
       this.input.dispatchEvent(new Event("input"));
       this.input.focus();
     });
-    actions.append(this.tagToggle, clear);
+    actions.append(this.scopeBtn, this.tagToggle, clear);
     search.append(icon, this.input, actions);
 
     // 面包屑
@@ -2277,6 +2284,23 @@ class LoraStackPanel {
     this.render();
   }
 
+  /** 搜索范围循环：全部 → 只看文件夹 → 只看 LoRA 文件 */
+  cycleSearchScope() {
+    const order = ["all", "folder", "lora"];
+    const short = { all: "全", folder: "夹", lora: "件" };
+    const hint = {
+      all: "搜索范围：全部（文件名 + 文件夹名）",
+      folder: "搜索范围：只看文件夹（结果点进去自己浏览）",
+      lora: "搜索范围：只看 LoRA 文件名",
+    };
+    const i = order.indexOf(this.searchScope);
+    this.searchScope = order[(i + 1) % order.length];
+    this.scopeBtn.textContent = short[this.searchScope];
+    this.scopeBtn.title = hint[this.searchScope];
+    this.scopeBtn.classList.toggle("on", this.searchScope !== "all");
+    if (this.query.trim()) this.runSearch(this.input.value);
+  }
+
   async runSearch(query) {
     const value = String(query || "").trim();
     if (!value) return;
@@ -2288,18 +2312,20 @@ class LoraStackPanel {
       // 只取第一页：命中上千条时后端一次全发实测约 590 KB，翻页走 offset 增量拉
       const data = await requestJSON(
         `/search?q=${encodeURIComponent(value)}&limit=${SEARCH_PAGE}&offset=0`
-          + `&tags=${this.includeTags ? 1 : 0}`
+          + `&tags=${this.includeTags ? 1 : 0}&scope=${this.searchScope}`
       );
       this.view = {
         kind: "search",
         data,
         items: Array.isArray(data.loras) ? data.loras : [],
         nameTotal: data.name_total || 0,
+        scope: this.searchScope,
       };
-      const parts = [`命中 ${data.total} 个 LoRA`];
+      const parts = [];
+      if (data.total) parts.push(`命中 ${data.total} 个 LoRA`);
       if (data.folder_total) parts.push(`${data.folder_total} 个文件夹`);
       if (data.tag_total) parts.push(`${data.tag_total} 个标签相关`);
-      this.setStatus("ok", parts.join(" · "));
+      this.setStatus(parts.length ? "ok" : "idle", parts.length ? parts.join(" · ") : "没有匹配");
     } catch (err) {
       this.setStatus("err", `搜索失败: ${err.message}`);
       this.view = { kind: "error", data: null };
@@ -2647,6 +2673,8 @@ class LoraStackPanel {
     const nameTotal = view.nameTotal || 0;
     const tagTotal = (view.data && view.data.tag_total) || 0;
     const body = this.body;
+    // 只搜文件名时不该说「文件夹命中」
+    const nameLabel = (view.scope || "all") === "lora" ? "文件名命中" : "名称 / 文件夹命中";
     let rendered = this._searchRendered || 0;
 
     for (const item of items) {
@@ -2659,7 +2687,7 @@ class LoraStackPanel {
         this._searchTagGrid.appendChild(this.card(item, true));
       } else {
         if (!this._searchNameGrid) {
-          body.appendChild(this.sectionLabel(`名称 / 文件夹命中 · ${nameTotal}`));
+          body.appendChild(this.sectionLabel(`${nameLabel} · ${nameTotal}`));
           this._searchNameGrid = el("div", "lsp-grid");
           body.appendChild(this._searchNameGrid);
         }
@@ -2748,7 +2776,7 @@ class LoraStackPanel {
       const q = (view.data && view.data.query) || this.query;
       const data = await requestJSON(
         `/search?q=${encodeURIComponent(q)}&limit=${SEARCH_PAGE}&offset=${rendered}`
-          + `&tags=${this.includeTags ? 1 : 0}`
+          + `&tags=${this.includeTags ? 1 : 0}&scope=${view.scope || this.searchScope}`
       );
       // 等待期间用户可能换了搜索词或重绘过面板，这批数据就不能再落地
       if (this.view !== view || this._searchRendered !== rendered) return;

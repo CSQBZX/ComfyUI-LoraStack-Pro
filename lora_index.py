@@ -297,6 +297,7 @@ class LoraIndex:
         # 搜索结果缓存：query -> (时间戳, 排序后的行, name_total, tag_total, folders, tokens, expanded)
         # 命中几千条时翻页只切片这层，不重跑全库匹配
         self._search_cache: dict[str, tuple] = {}
+        self._search_lock = threading.Lock()
         self.tag_blobs: dict[str, str] = {}
         self._tag_thread: threading.Thread | None = None
         self._warm_thread: threading.Thread | None = None
@@ -555,7 +556,10 @@ class LoraIndex:
             self.stale_covers = stale_covers
             self._roots = list(roots)
             self._blob_cache = {}
-            self._search_cache = {}   # 新增/删除文件后旧结果必须作废
+            # 新增/删除文件后旧结果必须作废；换绑前先拿锁，避免请求线程
+            # 正在遍历淘汰时被换掉判据
+            with self._search_lock:
+                self._search_cache = {}
             self._warm_thread = None  # 索引变了，预热要重来
             with self._tag_lock:
                 self.tag_blobs = {}
@@ -972,9 +976,15 @@ class LoraIndex:
                 time.time(), rows, name_total, tag_total, folder_total,
                 folder_out, tokens_out, expanded,
             )
-            if len(self._search_cache) > 8:
-                oldest = min(self._search_cache, key=lambda k: self._search_cache[k][0])
-                self._search_cache.pop(oldest, None)
+            # 淘汰要加锁：min() 会遍历 dict 的键，另一个请求线程同时写就会抛
+            # "dictionary changed size during iteration"。这里还必须用局部引用，
+            # 否则 build() 并发替换 _search_cache 时，遍历的是旧 dict 而查询的
+            # 是新 dict，会 KeyError。
+            with self._search_lock:
+                cache = self._search_cache
+                while len(cache) > 8:
+                    oldest = min(cache, key=lambda k: cache[k][0])
+                    cache.pop(oldest, None)
 
         start = max(0, int(offset))
         usable = rows if include_tags else rows[:name_total]

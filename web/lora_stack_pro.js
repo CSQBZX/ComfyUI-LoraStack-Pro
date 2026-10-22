@@ -931,9 +931,6 @@ class LoraStackPanel {
     if (this.view.kind !== "search" || !this.view.data) return [];
     const set = new Set();
     for (const token of this.view.data.tokens || []) set.add(token);
-    for (const list of Object.values(this.view.data.expanded || {})) {
-      for (const value of list) set.add(value);
-    }
     return [...set]
       .filter((token) => token && String(token).length)
       .map(String)
@@ -2600,15 +2597,8 @@ class LoraStackPanel {
     const items = view.items || [];
 
     const tokens = data.tokens || [];
-    const expanded = data.expanded || {};
     const notice = el("div", "lsp-note");
     notice.textContent = `搜索「${tokens.join(" ")}」`;
-    if (Object.keys(expanded).length) {
-      const map = Object.entries(expanded)
-        .map(([from, to]) => `${from} → ${to.filter((x) => x !== from).join(" / ")}`)
-        .join("；");
-      notice.textContent += `　同义词扩展：${map}`;
-    }
     body.appendChild(notice);
 
     const folders = data.folders || [];

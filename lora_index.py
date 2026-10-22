@@ -20,11 +20,6 @@ from urllib.parse import quote
 
 import folder_paths
 
-try:
-    from . import synonyms
-except ImportError:  # 少数加载方式下没有包上下文
-    import synonyms  # type: ignore[no-redef]
-
 try:  # 拼音搜索依赖，装不上就静默降级
     from pypinyin import lazy_pinyin, Style as PinyinStyle
     _HAS_PINYIN = True
@@ -1013,18 +1008,20 @@ class LoraIndex:
         }
 
     def _search_rows(self, raw_tokens: list[str]) -> tuple:
-        """算出完整命中与排序，返回可缓存的轻量行（不含每条的 payload dict）。"""
-        groups = [synonyms.expand(token) for token in raw_tokens]
-        expanded = {tok: list(grp) for tok, grp in zip(raw_tokens, groups) if len(grp) > 1}
+        """算出完整命中与排序，返回可缓存的轻量行（不含每条的 payload dict）。
 
+        每个 token 独立参与「与」匹配，不做同义词扩展：曾经做过中英同义词
+        双向扩展，搜「金发」会连带命中 700+ 条沾 `blonde` 标签的条目，
+        结果反而没法筛。中文现在只靠文件名、文件夹名和拼音命中。
+        """
         def hits(text: str) -> bool:
-            return any(any(variant in text for variant in group) for group in groups)
+            return any(token in text for token in raw_tokens)
 
         scored: list[tuple] = []
         first = raw_tokens[0]
         for entry in self.entries:
             blob = self.blob_of(entry)
-            if not all(any(variant in blob for variant in group) for group in groups):
+            if not all(token in blob for token in raw_tokens):
                 continue
             stem_low = entry.stem_low
             folder_low = entry.folder_low
@@ -1042,11 +1039,7 @@ class LoraIndex:
             tag_pos = 0
             if tag_group:
                 # 标签按词频排序写入，越靠前越相关；用它给纯标签命中排序
-                positions = [
-                    min(pos for pos in (blob.find(v) for v in group if v in blob))
-                    for group in groups
-                    if any(v in blob for v in group)
-                ]
+                positions = [blob.find(token) for token in raw_tokens if token in blob]
                 tag_pos = min(positions) if positions else 10 ** 6
             scored.append((
                 (rank, tag_pos, len(entry.rel), entry.rel_low),
@@ -1067,7 +1060,7 @@ class LoraIndex:
             if not rel_dir or node.total_count == 0:
                 continue
             target = node.search_target or f"{human_lower(node.name)} {human_lower(rel_dir)}"
-            if not all(any(variant in target for variant in group) for group in groups):
+            if not all(token in target for token in raw_tokens):
                 continue
             folder_hits.append({
                 "name": node.name,
@@ -1081,7 +1074,7 @@ class LoraIndex:
 
         # 文件夹命中按体积设上限：120 个实测就要 31~46 KB，比 20 条 LoRA 本身还大
         return (rows, name_total, len(rows) - name_total, len(folder_hits),
-                folder_hits[:40], raw_tokens, expanded)
+                folder_hits[:40], raw_tokens, {})
 
     def folder_lookup(self, rel_dir: str) -> dict | None:
         node = self.folders.get(norm_path(rel_dir))

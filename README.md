@@ -19,7 +19,7 @@ ComfyUI 里用来管理和使用 LoRA 的节点。把「一层层翻文件夹找
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone <仓库地址> ComfyUI-LoraStack-Pro
+git clone https://github.com/CSQBZX/ComfyUI-LoraStack-Pro.git
 ```
 
 或者下载 zip 解压到 `custom_nodes/ComfyUI-LoraStack-Pro`。

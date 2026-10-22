@@ -20,12 +20,6 @@ from urllib.parse import quote
 
 import folder_paths
 
-try:  # 拼音搜索依赖，装不上就静默降级
-    from pypinyin import lazy_pinyin
-    _HAS_PINYIN = True
-except Exception:  # noqa: BLE001
-    _HAS_PINYIN = False
-
 LOGGER = logging.getLogger("LoraStackPro")
 
 LORA_EXTS = {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".sft", ".gguf"}
@@ -70,27 +64,12 @@ def thumb_url(rel: str = "", dir_path: str = "", mtime: float = 0.0, width: int 
     return f"/lora_stack_pro/thumb?dir={quote(dir_path, safe='')}&t={stamp}{size}"
 
 
-def _pinyin_variants(text: str) -> str:
-    """生成全拼变体，让用户能打 `nvpuzhuang` 搜到「女仆装」。
-
-    不做首字母（`npz`）：两三个字母的缩写会和文件名里的字母组合大量撞车，
-    而且同一个缩写对应太多中文词，命中噪声远大于收益。
-    """
-    if not _HAS_PINYIN or not text:
-        return ""
-    if not any("\u4e00" <= ch <= "\u9fff" for ch in text):
-        return ""
-    try:
-        full = "".join(lazy_pinyin(text))
-    except Exception:  # noqa: BLE001 - 拼音转换失败不该影响搜索
-        return ""
-    if not full:
-        return ""
-    return f" {full} "
-
-
 def search_blob(*parts: str) -> str:
-    """把若干字段拼成可检索文本，保留原形、拆词形与拼音形。"""
+    """把若干字段拼成可检索文本，保留原形与拆词形。
+
+    不做拼音：全拼要额外依赖 pypinyin，而中文目录名本身已经能直接搜到；
+    首字母缩写又和文件名里的字母组合大量撞车。省掉它少一个依赖、少一类 bug。
+    """
     chunks = []
     for part in parts:
         if not part:
@@ -100,9 +79,6 @@ def search_blob(*parts: str) -> str:
         spaced = _SPLIT_RE.sub(" ", low).strip()
         if spaced != low:
             chunks.append(spaced)
-        pinyin = _pinyin_variants(low)
-        if pinyin:
-            chunks.append(pinyin)
     return " \u0001 ".join(chunks)
 
 
@@ -222,12 +198,7 @@ class FolderNode:
 
     def __post_init__(self) -> None:
         if not self.search_target:
-            # 拼音也要进：否则「只搜文件夹」时打 nvpuzhuang 找不到「女仆装」，
-            # 而「搜全部」却能找到，两边行为对不上
-            self.search_target = (
-                f"{human_lower(self.name)} {human_lower(self.rel)}"
-                f"{_pinyin_variants(self.name)}"
-            )
+            self.search_target = f"{human_lower(self.name)} {human_lower(self.rel)}"
 
 
 def _pick_thumb(stem: str, images: list[tuple[str, str, float]]) -> tuple[str, str] | None:

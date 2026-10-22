@@ -553,8 +553,8 @@ class LoraStackPanel {
     });
 
     const actions = el("div", "lsp-search-actions");
-    this.scopeBtn = el("button", "lsp-search-scope", "全");
-    this.scopeBtn.title = "搜索范围：全部 → 只看文件夹 → 只看 LoRA 文件";
+    this.scopeBtn = el("button", "lsp-search-scope", "全部");
+    this.scopeBtn.title = "搜索范围：全部 → 文件夹 → LoRA";
     this.scopeBtn.addEventListener("click", (e) => {
       e.preventDefault();
       this.cycleSearchScope();
@@ -2284,10 +2284,10 @@ class LoraStackPanel {
     this.render();
   }
 
-  /** 搜索范围循环：全部 → 只看文件夹 → 只看 LoRA 文件 */
+  /** 搜索范围循环：全部 → 文件夹 → LoRA */
   cycleSearchScope() {
     const order = ["all", "folder", "lora"];
-    const short = { all: "全", folder: "夹", lora: "件" };
+    const short = { all: "全部", folder: "文件夹", lora: "LoRA" };
     const hint = {
       all: "搜索范围：全部（文件名 + 文件夹名）",
       folder: "搜索范围：只看文件夹（结果点进去自己浏览）",

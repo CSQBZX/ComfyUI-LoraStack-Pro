@@ -1,0 +1,34 @@
+# ---- 用户数据：绝对不能提交 ----
+# tag_cache.json  含全库 LoRA 的训练标签全文（内容指纹）
+# hash_cache.json 含全库 LoRA 的 sha256
+# thumbs/         含 LoRA 预览图缩略图
+# civitai/        含查询过的模型信息
+# aliases/covers/usage/presets 是个人偏好
+data/
+
+# ---- 仅供本地维护，不随仓库发布 ----
+# 这份文档记得是本地环境的路径、实测库规模和性能基线，是写给自己看的
+HANDOVER.md
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- 本地备份 ----
+*.bak
+*.bak-*
+*.orig
+*.rej
+*.tmp
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

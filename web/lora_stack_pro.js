@@ -2630,7 +2630,11 @@ class LoraStackPanel {
     const folders = data.folders || [];
     if (folders.length) {
       const folderTotal = data.folder_total || folders.length;
-      body.appendChild(this.sectionLabel(`匹配的文件夹 · ${folderTotal}`));
+      // 命中上千个文件夹时只发前 40 个，标题里要说清楚，否则看起来像丢了数据
+      const folderLabel = folderTotal > folders.length
+        ? `匹配的文件夹 · ${folderTotal}（显示前 ${folders.length} 个）`
+        : `匹配的文件夹 · ${folderTotal}`;
+      body.appendChild(this.sectionLabel(folderLabel));
       const row = el("div", "lsp-folder-row");
       for (const folder of folders) {
         const chip = this.folderChip(folder);
